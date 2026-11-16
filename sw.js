@@ -1,5 +1,5 @@
 // Stack service worker: caches the app shell so it works offline.
-const VERSION = 'stack-v1';
+const VERSION = 'stack-v2';
 const SHELL = [
   './',
   './index.html',

@@ -64,6 +64,7 @@ function normalizeState(input) {
       createdAt: Number(g.createdAt) || Date.now(),
       finishedAt: Number(g.finishedAt) || null,
       status: g.status === 'done' ? 'done' : 'live',
+      settleMode: g.settleMode === 'p2p' ? 'p2p' : 'bank',
       players,
     });
   }
@@ -391,9 +392,37 @@ function updateCashDerived(game) {
   const finish = $('#finish');
   if (finish) finish.disabled = st.kind !== 'ok';
   if (st.kind !== 'ok') { pay.innerHTML = ''; return; }
+  const mode = game.settleMode === 'p2p' ? 'p2p' : 'bank';
+  const modeToggle = `
+    <div class="seg seg-2" role="group" aria-label="How to settle" style="margin-top:22px">
+      <button type="button" data-mode="bank" aria-pressed="${mode === 'bank'}">Bank pays out</button>
+      <button type="button" data-mode="p2p" aria-pressed="${mode === 'p2p'}">Player to player</button>
+    </div>`;
+  const wireToggle = () => pay.querySelectorAll('[data-mode]').forEach(b => {
+    b.onclick = () => { game.settleMode = b.dataset.mode; saveState(); updateCashDerived(game); };
+  });
+  if (mode === 'bank') {
+    const payouts = bankPayouts(game);
+    pay.innerHTML = `${modeToggle}
+      <div class="section-h"><h2>Bank pays out</h2><span>${esc(money(game, st.out))} total</span></div>
+      ${payouts.length === 0 ? `<div class="card pay-row"><div class="names">Nobody has chips left. The bank keeps the pot.</div></div>` : `
+      <div class="list">${payouts.map(p => {
+        const net = p.cashOut - sumBuyIns(p);
+        return `
+        <div class="card pay-row">
+          <div class="names">${esc(p.name)}
+            <div class="meta money" style="font-weight:600;font-size:14px;color:var(--muted)">in ${esc(money(game, sumBuyIns(p)))} · <span class="net ${net > 0 ? 'pos' : net < 0 ? 'neg' : 'zero'}">${net === 0 ? 'even' : esc(money(game, net, { sign: true }))}</span></div>
+          </div>
+          <div class="amt">${esc(money(game, p.cashOut))}</div>
+        </div>`;
+      }).join('')}</div>`}
+      ${game.players.some(p => p.cashOut === 0) ? `<p class="hint" style="text-align:center;margin-top:10px">Players with no chips left get nothing back.</p>` : ''}`;
+    wireToggle();
+    return;
+  }
   const payments = settle(netsOf(game));
   const name = id => game.players.find(p => p.id === id)?.name ?? '?';
-  pay.innerHTML = `
+  pay.innerHTML = `${modeToggle}
     <div class="section-h"><h2>Who pays who</h2><span>${plural(payments.length, 'payment')}</span></div>
     ${payments.length === 0 ? `<div class="card pay-row"><div class="names">Everyone broke even. No payments needed.</div></div>` : `
     <div class="list">${payments.map(x => `
@@ -402,6 +431,14 @@ function updateCashDerived(game) {
         <div class="amt">${esc(money(game, x.amount))}</div>
       </div>`).join('')}
     </div>`}`;
+  wireToggle();
+}
+
+/** Bank model: everyone paid the banker up front; at the end the bank pays each player their chips. */
+function bankPayouts(game) {
+  return game.players
+    .filter(p => (p.cashOut ?? 0) > 0)
+    .sort((a, b) => b.cashOut - a.cashOut || a.name.localeCompare(b.name));
 }
 
 /* ---------- Share ---------- */
@@ -417,7 +454,13 @@ function summaryText(game) {
   }
   const st = cashStatus(game);
   lines.push('');
-  if (st.kind === 'ok') {
+  if (st.kind === 'ok' && game.settleMode !== 'p2p') {
+    const payouts = bankPayouts(game);
+    if (payouts.length) {
+      lines.push('Bank pays out:');
+      for (const p of payouts) lines.push(`${p.name}: ${money(game, p.cashOut, ascii)}`);
+    } else lines.push('Nobody has chips left. The bank keeps the pot.');
+  } else if (st.kind === 'ok') {
     const payments = settle(netsOf(game));
     const name = id => game.players.find(p => p.id === id).name;
     if (payments.length) {
@@ -597,7 +640,7 @@ function openNewGameSheet() {
   openSheet(el => gameForm(el, {
     title: 'New game', name: defaultGameName(), buyIn: state.settings.lastBuyIn, currency: state.settings.lastCurrency, submit: 'Start game',
   }, ({ name, buyIn, currency }) => {
-    const game = { id: uid(), name, buyIn, currency, createdAt: Date.now(), finishedAt: null, status: 'live', players: [] };
+    const game = { id: uid(), name, buyIn, currency, createdAt: Date.now(), finishedAt: null, status: 'live', settleMode: 'bank', players: [] };
     closeSheet(true);
     commit(() => {
       state.games.push(game);

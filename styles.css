@@ -269,3 +269,4 @@ textarea.input { min-height: 140px; font-family: ui-monospace, Menlo, monospace;
   .sheet { border-radius: 24px 24px 0 0; }
 }
 body.sheet-open #toast-root { top: calc(var(--safe-t) + 12px); bottom: auto; }
+.seg.seg-2 { grid-template-columns: 1fr 1fr; }
