@@ -270,3 +270,63 @@ textarea.input { min-height: 140px; font-family: ui-monospace, Menlo, monospace;
 }
 body.sheet-open #toast-root { top: calc(var(--safe-t) + 12px); bottom: auto; }
 .seg.seg-2 { grid-template-columns: 1fr 1fr; }
+
+/* ---------- My bankroll ---------- */
+.grow { flex: 1; min-width: 0; }
+.me-card { display: flex; align-items: center; gap: 14px; width: 100%; text-align: left; padding: 14px 14px 14px 16px; margin: 16px 0 4px; }
+.me-card:active { background: var(--surface-2); }
+.me-icon { width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center; flex: none; background: rgba(232, 195, 126, 0.12); color: var(--gold); }
+.me-icon svg { width: 22px; height: 22px; }
+.me-label { display: block; font-weight: 800; }
+.me-meta { display: block; color: var(--muted); font-size: 14px; margin-top: 1px; }
+.me-value { font-family: var(--serif); font-size: 28px; color: var(--gold); font-variant-numeric: tabular-nums; }
+.me-chev { color: var(--faint); display: grid; } .me-chev svg { width: 20px; height: 20px; }
+.hero-sub { color: var(--muted); font-weight: 600; font-size: 15px; margin-top: 2px; }
+.linkish { color: var(--gold); font-weight: 700; text-decoration: underline; text-underline-offset: 3px; }
+.stats.two { grid-template-columns: 1fr 1fr; }
+.stats.two .stat { text-align: left; padding: 12px 14px; }
+.stats.two .stat b { font-size: 26px; }
+
+.chart-card { position: relative; padding: 14px 12px 8px; margin-bottom: 12px; }
+.chart-title { font-size: 13px; font-weight: 700; color: var(--muted); padding: 0 4px 2px; }
+.chart { min-height: 120px; touch-action: pan-y; }
+.chart svg { display: block; overflow: visible; }
+.chart .grid { stroke: rgba(255, 255, 255, 0.07); stroke-width: 1; }
+.chart .start-line { stroke: rgba(255, 255, 255, 0.22); stroke-width: 1; stroke-dasharray: 3 4; }
+.chart .hover-line { stroke: rgba(241, 236, 224, 0.4); stroke-width: 1; }
+.chart .axis { fill: var(--faint); font: 600 11px var(--sans); font-variant-numeric: tabular-nums; }
+.chart-empty { color: var(--muted); text-align: center; padding: 42px 12px; font-size: 14px; }
+.chart-tip { position: absolute; top: 8px; z-index: 2; pointer-events: none; background: #f1ece0; color: #12160f; border-radius: 10px; padding: 6px 10px; box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4); white-space: nowrap; }
+.chart-tip .tip-label { font-size: 12px; font-weight: 600; color: #4a5249; max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+.chart-tip .tip-val { font-weight: 800; font-size: 15px; }
+.chart-tip .pos { color: #1d8a4c; } .chart-tip .neg { color: #c43d2e; } .chart-tip .zero { color: #4a5249; }
+
+.session-row { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left; padding: 14px 16px; }
+.session-row:active { background: var(--surface-2); }
+.session-row .name { display: block; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.session-row .meta { display: block; color: var(--muted); font-size: 13px; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.session-net { font-size: 17px; flex: none; }
+.net-preview { text-align: center; font-weight: 700; color: var(--muted); margin: -4px 0 14px; min-height: 0; }
+.net-preview:empty { display: none; }
+.opt { font-style: normal; font-weight: 500; color: var(--faint); }
+textarea.input.notes { min-height: 80px; font-family: var(--sans); font-size: 16px; }
+input[type="date"].input { min-height: 52px; color-scheme: dark; }
+.menu-item .grow small { display: block; color: var(--muted); font-weight: 500; font-size: 13px; }
+.menu-item .avatar { width: 36px; height: 36px; font-size: 19px; }
+
+.pinpad { text-align: center; padding: 4px 0 8px; position: relative; }
+.pin-lock { width: 52px; height: 52px; border-radius: 26px; margin: 0 auto 10px; display: grid; place-items: center; background: rgba(232, 195, 126, 0.12); color: var(--gold); }
+.pin-lock svg { width: 24px; height: 24px; }
+.pin-title { font-family: var(--serif); font-weight: 400; font-size: 30px; margin: 0; }
+.pin-sub { color: var(--muted); margin: 4px 0 18px; min-height: 22px; }
+.pin-dots { display: flex; justify-content: center; gap: 16px; margin-bottom: 26px; }
+.pin-dots span { width: 14px; height: 14px; border-radius: 7px; border: 2px solid rgba(232, 195, 126, 0.6); transition: background 0.1s; }
+.pin-dots span.on { background: var(--gold); border-color: var(--gold); }
+.pin-keys { display: grid; grid-template-columns: repeat(3, 76px); gap: 14px 22px; justify-content: center; }
+.pin-keys button { width: 76px; height: 76px; border-radius: 38px; background: var(--surface-2); font-size: 28px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.pin-keys button:active { background: var(--gold); color: var(--gold-ink); }
+.pin-keys button[data-k="del"] { background: none; font-size: 24px; color: var(--muted); }
+.pin-hidden { position: absolute; opacity: 0; width: 1px; height: 1px; pointer-events: none; left: 0; top: 0; }
+.shake { animation: shake 0.35s; }
+@keyframes shake { 20%, 60% { transform: translateX(-8px); } 40%, 80% { transform: translateX(8px); } }
+@media (prefers-reduced-motion: reduce) { .shake { animation: none; } }

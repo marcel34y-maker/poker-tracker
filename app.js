@@ -1,4 +1,5 @@
 import { CURRENCIES, parseMoney, formatMoney, centsToInput, settle } from './money.js';
+import { computeStats, sortSessions, sessionNet, parseDuration, formatDuration, durationToInput } from './bankroll.js';
 
 /* =========================================================
    Storage (localStorage, never throws)
@@ -6,7 +7,11 @@ import { CURRENCIES, parseMoney, formatMoney, centsToInput, settle } from './mon
 const STORAGE_KEY = 'stack.v1';
 
 function emptyState() {
-  return { version: 1, games: [], settings: { autoFirstBuyIn: true, lastBuyIn: 2000, lastCurrency: 'usd' } };
+  return { version: 1, games: [], settings: { autoFirstBuyIn: true, lastBuyIn: 2000, lastCurrency: 'usd' }, bankroll: emptyBankroll() };
+}
+
+function emptyBankroll(currency = 'usd') {
+  return { start: 0, currency, sessions: [], pin: null };
 }
 
 function loadState() {
@@ -68,7 +73,32 @@ function normalizeState(input) {
       players,
     });
   }
-  return { version: 1, games, settings };
+  return { version: 1, games, settings, bankroll: normalizeBankroll(input.bankroll, settings.lastCurrency) };
+}
+
+const isDay = v => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v);
+
+function normalizeBankroll(b, fallbackCurrency = 'usd') {
+  if (!b || typeof b !== 'object') return emptyBankroll(fallbackCurrency);
+  const pin = b.pin && typeof b.pin.salt === 'string' && typeof b.pin.hash === 'string' ? { salt: b.pin.salt, hash: b.pin.hash } : null;
+  return {
+    start: isCents(b.start) ? b.start : 0,
+    currency: CURRENCIES[b.currency] ? b.currency : fallbackCurrency,
+    pin,
+    sessions: (Array.isArray(b.sessions) ? b.sessions : [])
+      .filter(x => x && typeof x.id === 'string' && isDay(x.date) && isCents(x.buyIn) && isCents(x.cashOut))
+      .map(x => ({
+        id: x.id,
+        date: x.date,
+        createdAt: Number(x.createdAt) || 0,
+        buyIn: x.buyIn,
+        cashOut: x.cashOut,
+        minutes: Number.isInteger(x.minutes) && x.minutes > 0 ? x.minutes : null,
+        where: typeof x.where === 'string' ? x.where.slice(0, 60) : '',
+        notes: typeof x.notes === 'string' ? x.notes.slice(0, 500) : '',
+        gameId: typeof x.gameId === 'string' ? x.gameId : null,
+      })),
+  };
 }
 
 let state = loadState();
@@ -105,6 +135,8 @@ const ICON = {
   copy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/></svg>',
   restore: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>',
   open: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>',
+  chart: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 15l4-4 3 3 6-7"/></svg>',
+  lock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>',
   chip: '<svg viewBox="0 0 64 64" fill="none"><circle cx="32" cy="32" r="27" stroke="#e8c37e" stroke-width="5" stroke-dasharray="10.6 6.4"/><circle cx="32" cy="32" r="19" stroke="#e8c37e" stroke-opacity=".45" stroke-width="1.5"/></svg>',
 };
 
@@ -140,6 +172,7 @@ function addBuyIn(game, player, amount) {
 function route() {
   const parts = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean);
   if (parts[0] === 'g' && parts[1]) return { name: parts[2] === 'cash' ? 'cash' : 'game', id: parts[1] };
+  if (parts[0] === 'me') return { name: 'me' };
   return { name: 'home' };
 }
 function go(hash) {
@@ -159,6 +192,7 @@ const view = $('#view');
 
 function render() {
   const r = route();
+  if (r.name === 'me') return renderBankroll();
   const game = r.id ? getGame(r.id) : null;
   if (r.name !== 'home' && !game) {
     history.replaceState(null, '', location.pathname + location.search);
@@ -194,6 +228,7 @@ function renderHome() {
       <h1>Stack</h1>
       <button class="icon-btn" id="open-settings" aria-label="Settings">${ICON.gear}</button>
     </header>
+    ${bankrollCard()}
     ${state.games.length === 0 ? `
       <div class="empty">
         <div class="art">${ICON.chip}</div>
@@ -207,6 +242,7 @@ function renderHome() {
 
   $('#new-game').onclick = () => openNewGameSheet();
   $('#open-settings').onclick = () => openSettingsSheet();
+  $('#open-me').onclick = () => go('#/me');
   view.querySelectorAll('[data-open]').forEach(b => {
     b.onclick = () => {
       const g = getGame(b.dataset.open);
@@ -667,6 +703,7 @@ function openGameMenu(game) {
         ${route().name === 'home' ? `<button class="menu-item" id="m-open">${ICON.open}<span>Open</span></button>` : ''}
         <button class="menu-item" id="m-edit">${ICON.edit}<span>Edit name, buy-in, currency</span></button>
         <button class="menu-item" id="m-share">${ICON.share}<span>Share summary</span></button>
+        ${game.status === 'done' ? `<button class="menu-item" id="m-mine">${ICON.chart}<span>Add to my bankroll<small>Log your result from this game</small></span></button>` : ''}
         ${game.status === 'done' ? `<button class="menu-item" id="m-reopen">${ICON.restore}<span>Reopen game<small>Move back to live games</small></span></button>` : ''}
         <button class="menu-item danger" id="m-delete">${ICON.trash}<span>Delete game</span></button>
       </div>`;
@@ -675,6 +712,8 @@ function openGameMenu(game) {
     if (mOpen) mOpen.onclick = () => { closeSheet(true); go(game.status === 'done' ? `#/g/${game.id}/cash` : `#/g/${game.id}`); };
     $('#m-edit', el).onclick = () => openEditGameSheet(game);
     $('#m-share', el).onclick = () => { closeSheet(); shareSummary(game); };
+    const mMine = $('#m-mine', el);
+    if (mMine) mMine.onclick = () => withUnlock(() => openPickMeSheet(game));
     const mReopen = $('#m-reopen', el);
     if (mReopen) mReopen.onclick = () => {
       closeSheet(true);
@@ -818,25 +857,29 @@ function openSettingsSheet() {
     el.innerHTML = `${sheetHead('Settings')}
       <p class="lead">Everything is stored only on this phone. Nothing is sent anywhere.</p>
       <div class="stack">
-        <button class="menu-item" id="s-backup">${ICON.copy}<span>Copy backup<small>Copies all games as JSON text</small></span></button>
+        <button class="menu-item" id="s-backup">${ICON.copy}<span>Copy backup<small>${isLocked() ? 'Games only. Unlock your bankroll to include it' : 'Copies all games and your bankroll as text'}</small></span></button>
         <button class="menu-item" id="s-restore">${ICON.restore}<span>Restore from backup<small>Paste backup text to replace data</small></span></button>
         <button class="menu-item danger" id="s-delete">${ICON.trash}<span>Delete all data</span></button>
       </div>
       <p class="footnote">Stack · ${plural(state.games.length, 'game')} saved · works offline</p>`;
     wireClose(el);
     $('#s-backup', el).onclick = async () => {
-      const json = JSON.stringify(state, null, 2);
+      const data = isLocked() ? { ...state, bankroll: undefined } : state;
+      const json = JSON.stringify(data, null, 2);
       if (await copyText(json)) toast('Backup copied. Paste it somewhere safe.');
       else openTextSheet('Backup', 'Copy this text and keep it somewhere safe.', json);
     };
     $('#s-restore', el).onclick = () => openRestoreSheet();
     $('#s-delete', el).onclick = () => confirmSheet({
       title: 'Delete all data?',
-      body: `This deletes ${plural(state.games.length, 'game')} from this phone. Copy a backup first if you might want them.`,
+      body: isLocked()
+        ? `This deletes ${plural(state.games.length, 'game')} from this phone. Your PIN-locked bankroll is kept. To erase it, unlock it and use its settings.`
+        : `This deletes ${plural(state.games.length, 'game')} and your bankroll (${plural(state.bankroll.sessions.length, 'session')}) from this phone. Copy a backup first if you might want them.`,
       confirm: 'Delete everything',
       onConfirm: () => {
         go('#');
-        commit(() => { state = emptyState(); }, 'All data deleted');
+        const keep = isLocked() ? state.bankroll : null;
+        commit(() => { state = emptyState(); if (keep) state.bankroll = keep; }, 'All data deleted');
       },
     });
   });
@@ -855,11 +898,18 @@ function openRestoreSheet() {
     wireClose(el);
     $('#r-go', el).onclick = () => {
       let parsed = null;
-      try { parsed = normalizeState(JSON.parse($('#r-text', el).value)); } catch (e) { parsed = null; }
+      let hasBankroll = false;
+      try {
+        const raw = JSON.parse($('#r-text', el).value);
+        hasBankroll = !!(raw && raw.bankroll);
+        parsed = normalizeState(raw);
+      } catch (e) { parsed = null; }
+      // A locked bankroll is never replaced; a backup without a bankroll keeps the current one.
+      if (parsed && (isLocked() || !hasBankroll)) parsed.bankroll = state.bankroll;
       if (!parsed) { $('#r-err', el).textContent = 'That doesn’t look like a Stack backup.'; return; }
       confirmSheet({
         title: 'Replace all data?',
-        body: `Restore ${plural(parsed.games.length, 'game')} from the backup. Your current ${plural(state.games.length, 'game')} will be replaced.`,
+        body: `Restore ${plural(parsed.games.length, 'game')} from the backup. Your current ${plural(state.games.length, 'game')} will be replaced.${hasBankroll && !isLocked() ? ` Your bankroll will be replaced with the backup’s (${plural(parsed.bankroll.sessions.length, 'session')}).` : ''}`,
         confirm: 'Restore',
         onConfirm: () => {
           go('#');
@@ -867,6 +917,475 @@ function openRestoreSheet() {
         },
       });
     };
+  });
+}
+
+/* =========================================================
+   My bankroll (private to this phone, optional PIN)
+   ========================================================= */
+let unlocked = false; // in memory only: re-locks on reload or when the app goes to the background
+const isLocked = () => !!state.bankroll.pin && !unlocked;
+const bm = (cents, opts) => formatMoney(cents, state.bankroll.currency, opts);
+const pad2 = n => String(n).padStart(2, '0');
+const todayStr = () => { const d = new Date(); return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`; };
+const dayStr = ts => { const d = new Date(ts); return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`; };
+function fmtDay(s, withYear) {
+  const [y, m, d] = s.split('-').map(Number);
+  const opts = { month: 'short', day: 'numeric' };
+  if (withYear || y !== new Date().getFullYear()) opts.year = 'numeric';
+  return new Date(y, m - 1, d).toLocaleDateString(undefined, opts);
+}
+const netClass = n => (n > 0 ? 'pos' : n < 0 ? 'neg' : 'zero');
+const netText = n => (n === 0 ? 'even' : bm(n, { sign: true }));
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden' && state.bankroll.pin && unlocked) {
+    unlocked = false;
+    if (route().name === 'me') { closeSheet(true); render(); }
+  }
+});
+
+async function hashPin(pin, salt) {
+  if (!(window.crypto && crypto.subtle)) throw new Error('no-crypto');
+  const bytes = new TextEncoder().encode(salt + ':' + pin);
+  const buf = await crypto.subtle.digest('SHA-256', bytes);
+  return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+const newSalt = () => [...crypto.getRandomValues(new Uint8Array(16))].map(b => b.toString(16).padStart(2, '0')).join('');
+async function checkPin(pin) {
+  const p = state.bankroll.pin;
+  return !!p && (await hashPin(pin, p.salt)) === p.hash;
+}
+
+/** A 4-digit keypad. onComplete(pin) returns true to accept, or a string error to shake and clear. */
+function mountPinPad(root, { title, subtitle, onComplete, extra = '' }) {
+  let digits = '';
+  let busy = false;
+  root.innerHTML = `
+    <div class="pinpad">
+      <div class="pin-lock">${ICON.lock}</div>
+      <h2 class="pin-title">${esc(title)}</h2>
+      <p class="pin-sub" data-sub>${esc(subtitle)}</p>
+      <div class="pin-dots" aria-hidden="true">${'<span></span>'.repeat(4)}</div>
+      <div class="pin-keys">
+        ${[1, 2, 3, 4, 5, 6, 7, 8, 9].map(n => `<button type="button" data-k="${n}">${n}</button>`).join('')}
+        <span></span><button type="button" data-k="0">0</button>
+        <button type="button" data-k="del" aria-label="Delete">⌫</button>
+      </div>
+      <input class="pin-hidden" inputmode="numeric" autocomplete="one-time-code" aria-label="PIN" maxlength="4">
+      ${extra}
+    </div>`;
+  const dots = root.querySelectorAll('.pin-dots span');
+  const sub = root.querySelector('[data-sub]');
+  const box = root.querySelector('.pinpad');
+  const draw = () => dots.forEach((d, i) => d.classList.toggle('on', i < digits.length));
+  const press = async k => {
+    if (busy) return;
+    if (k === 'del') digits = digits.slice(0, -1);
+    else if (digits.length < 4) digits += k;
+    draw();
+    if (digits.length === 4) {
+      busy = true;
+      const res = await onComplete(digits);
+      busy = false;
+      if (res && res.next) { sub.textContent = res.next; digits = ''; draw(); return; }
+      if (res !== true) {
+        haptic();
+        box.classList.remove('shake'); void box.offsetWidth; box.classList.add('shake');
+        if (typeof res === 'string') sub.textContent = res;
+        digits = ''; draw();
+      }
+    }
+  };
+  root.querySelectorAll('[data-k]').forEach(b => (b.onclick = () => press(b.dataset.k)));
+  // Hardware/desktop keyboards.
+  const hidden = root.querySelector('.pin-hidden');
+  hidden.addEventListener('keydown', e => {
+    if (/^\d$/.test(e.key)) { e.preventDefault(); press(e.key); }
+    else if (e.key === 'Backspace') { e.preventDefault(); press('del'); }
+  });
+  box.addEventListener('click', e => { if (!e.target.closest('button')) hidden.focus({ preventScroll: true }); });
+  return { setSubtitle: t => (sub.textContent = t) };
+}
+
+function withUnlock(fn) {
+  if (!isLocked()) return fn();
+  openSheet(el => {
+    el.innerHTML = `${sheetHead('Unlock')}<div data-pad></div>`;
+    wireClose(el);
+    mountPinPad($('[data-pad]', el), {
+      title: 'Enter your PIN',
+      subtitle: 'Your bankroll is locked.',
+      onComplete: async pin => {
+        if (!(await checkPin(pin))) return 'Wrong PIN. Try again.';
+        unlocked = true;
+        closeSheet(true);
+        fn();
+        return true;
+      },
+    });
+  });
+}
+
+function bankrollCard() {
+  const br = state.bankroll;
+  const locked = isLocked();
+  const stats = computeStats(br.sessions, br.start);
+  const detail = locked
+    ? 'Locked with a PIN'
+    : br.sessions.length ? `${plural(br.sessions.length, 'session')} · <span class="${netClass(stats.profit)}">${esc(netText(stats.profit))}</span>` : 'Track your own results. Only you can see this.';
+  return `
+    <button class="card me-card" id="open-me">
+      <span class="me-icon">${locked ? ICON.lock : ICON.chart}</span>
+      <span class="grow">
+        <span class="me-label">My bankroll</span>
+        <span class="me-meta">${detail}</span>
+      </span>
+      ${!locked && (br.sessions.length || br.start) ? `<span class="me-value">${esc(bm(stats.bankroll))}</span>` : `<span class="me-chev">${ICON.open}</span>`}
+    </button>`;
+}
+
+function renderBankroll() {
+  document.title = 'My bankroll · Stack';
+  const br = state.bankroll;
+  if (isLocked()) {
+    view.innerHTML = `
+      <div class="topbar">
+        <button class="icon-btn" id="back" aria-label="Back">${ICON.back}</button>
+        <div class="title">My bankroll</div><span class="icon-btn"></span>
+      </div>
+      <div data-pad style="padding-top:12px"></div>`;
+    $('#back').onclick = () => go('#');
+    mountPinPad($('[data-pad]'), {
+      title: 'Enter your PIN',
+      subtitle: 'Only you can see your bankroll.',
+      extra: `<button type="button" class="btn btn-ghost" id="forgot" style="margin-top:8px">Forgot PIN?</button>`,
+      onComplete: async pin => {
+        if (!(await checkPin(pin))) return 'Wrong PIN. Try again.';
+        unlocked = true;
+        render();
+        return true;
+      },
+    });
+    $('#forgot').onclick = () => confirmSheet({
+      title: 'Forgot your PIN?',
+      body: 'There’s no way to recover it. Stack has no accounts or servers. You can erase your bankroll and PIN and start fresh. Your games are kept.',
+      confirm: 'Erase bankroll & PIN',
+      onConfirm: () => commit(() => { state.bankroll = emptyBankroll(state.bankroll.currency); }),
+    });
+    return;
+  }
+
+  const stats = computeStats(br.sessions, br.start);
+  const sessions = sortSessions(br.sessions).reverse();
+  const tile = (label, value, cls = '') => `<div class="stat"><b class="money ${cls}">${value}</b><span>${label}</span></div>`;
+  view.innerHTML = `
+    <div class="topbar">
+      <button class="icon-btn" id="back" aria-label="Back">${ICON.back}</button>
+      <div class="title">My bankroll</div>
+      ${br.pin ? `<button class="icon-btn" id="lock-now" aria-label="Lock">${ICON.lock}</button>` : ''}
+      <button class="icon-btn" id="br-settings" aria-label="Bankroll settings">${ICON.gear}</button>
+    </div>
+    <div class="hero" style="padding-bottom:8px">
+      <div class="label">Bankroll</div>
+      <div class="big" id="br-total">${esc(bm(stats.bankroll))}</div>
+      <div class="hero-sub">${br.sessions.length
+        ? `<span class="net ${netClass(stats.profit)}">${esc(netText(stats.profit))}</span> all time${br.start ? ` · started at ${esc(bm(br.start))}` : ''}`
+        : br.start ? `Starting bankroll` : `Set a starting amount in <button class="linkish" id="br-settings-2">settings</button>`}</div>
+    </div>
+    <div class="card chart-card" id="chart-card">
+      <div class="chart-title">Bankroll over time</div>
+      <div id="chart" class="chart"></div>
+      <div class="chart-tip" id="chart-tip" hidden></div>
+    </div>
+    ${br.sessions.length ? `
+    <div class="stats two">
+      ${tile('Sessions', stats.count)}
+      ${tile('Winning sessions', stats.winRate === null ? '—' : stats.winRate + '%')}
+      ${tile('Avg per session', esc(netText(stats.avg)), netClass(stats.avg))}
+      ${tile('Per hour', stats.hourly === null ? '—' : esc(netText(stats.hourly)), stats.hourly === null ? '' : netClass(stats.hourly))}
+      ${tile('Best session', esc(netText(stats.best)), netClass(stats.best))}
+      ${tile('Worst session', esc(netText(stats.worst)), netClass(stats.worst))}
+    </div>` : ''}
+    <div class="section-h"><h2>Sessions</h2><span>${br.sessions.length ? 'Tap to edit' : ''}</span></div>
+    ${sessions.length ? `<div class="list">${sessions.map(s => {
+      const n = sessionNet(s);
+      return `
+      <button class="card session-row" data-session="${esc(s.id)}">
+        <span class="grow">
+          <span class="name">${esc(s.where || 'Session')}</span>
+          <span class="meta money">${esc(fmtDay(s.date))} · in ${esc(bm(s.buyIn))} · out ${esc(bm(s.cashOut))}${s.minutes ? ' · ' + esc(formatDuration(s.minutes)) : ''}</span>
+        </span>
+        <span class="session-net net ${netClass(n)}">${esc(netText(n))}</span>
+      </button>`;
+    }).join('')}</div>` : `
+    <div class="empty" style="padding-top:20px">
+      <h3>Your private record</h3>
+      <p>Log what you bought in for and cashed out with each time you play. Stats stay on this phone only, and you can lock them with a PIN.</p>
+    </div>`}
+    <p class="footnote">Stored only on this phone. Nobody else, including the banker, can see it.${br.pin ? '' : ' Add a PIN in settings to lock it.'}</p>
+    ${actionbar(`<button class="btn btn-primary" id="log-session">${ICON.plus} Log session</button>`)}
+  `;
+  $('#back').onclick = () => go('#');
+  $('#br-settings').onclick = () => openBankrollSettings();
+  const s2 = $('#br-settings-2'); if (s2) s2.onclick = () => openBankrollSettings();
+  const lockBtn = $('#lock-now');
+  if (lockBtn) lockBtn.onclick = () => { unlocked = false; render(); toast('Bankroll locked'); };
+  $('#log-session').onclick = () => openSessionSheet();
+  view.querySelectorAll('[data-session]').forEach(b => (b.onclick = () => openSessionSheet(br.sessions.find(s => s.id === b.dataset.session))));
+  drawChart(stats, br.start);
+}
+
+/* ---------- Chart: one series, the running bankroll ---------- */
+function drawChart(stats, start) {
+  const host = $('#chart');
+  const tip = $('#chart-tip');
+  if (!host) return;
+  const pts = [{ label: 'Start', value: start, net: null }, ...stats.series.map(p => {
+    const s = state.bankroll.sessions.find(x => x.id === p.id);
+    return { label: fmtDay(p.date) + (s && s.where ? ' · ' + s.where : ''), value: p.value, net: p.net };
+  })];
+  if (pts.length < 2) {
+    host.innerHTML = `<div class="chart-empty">Your graph appears after your first session.</div>`;
+    return;
+  }
+  const W = Math.max(240, Math.round(host.clientWidth || 320));
+  const H = 170;
+  const padL = 4, padR = 10, padT = 22, padB = 22;
+  const vals = pts.map(p => p.value);
+  let lo = Math.min(...vals), hi = Math.max(...vals);
+  if (lo === hi) { lo -= 1000; hi += 1000; }
+  const span = hi - lo;
+  lo -= Math.round(span * 0.08); hi += Math.round(span * 0.08);
+  const x = i => padL + (i * (W - padL - padR)) / (pts.length - 1);
+  const y = v => padT + ((hi - v) * (H - padT - padB)) / (hi - lo);
+  const line = pts.map((p, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(p.value).toFixed(1)}`).join('');
+  const area = `${line}L${x(pts.length - 1).toFixed(1)},${H - padB}L${x(0).toFixed(1)},${H - padB}Z`;
+  const last = pts.length - 1;
+  const maxV = Math.max(...vals), minV = Math.min(...vals);
+  host.innerHTML = `
+    <svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" role="img" aria-label="Bankroll over ${plural(pts.length - 1, 'session')}, from ${esc(bm(start))} to ${esc(bm(pts[last].value))}">
+      <defs><linearGradient id="g-area" x1="0" x2="0" y1="0" y2="1">
+        <stop offset="0" stop-color="#e8c37e" stop-opacity=".22"/><stop offset="1" stop-color="#e8c37e" stop-opacity="0"/>
+      </linearGradient></defs>
+      <line x1="${padL}" x2="${W - padR}" y1="${y(maxV)}" y2="${y(maxV)}" class="grid"/>
+      <line x1="${padL}" x2="${W - padR}" y1="${y(minV)}" y2="${y(minV)}" class="grid"/>
+      <text x="${padL}" y="${y(maxV) - 6}" class="axis">${esc(bm(maxV))}</text>
+      ${minV !== maxV ? `<text x="${padL}" y="${y(minV) + 14}" class="axis">${esc(bm(minV))}</text>` : ''}
+      <line x1="${padL}" x2="${W - padR}" y1="${y(start)}" y2="${y(start)}" class="start-line"/>
+      <path d="${area}" fill="url(#g-area)"/>
+      <path d="${line}" fill="none" stroke="#e8c37e" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+      <circle cx="${x(last)}" cy="${y(pts[last].value)}" r="4.5" fill="#e8c37e" stroke="#14221b" stroke-width="2"/>
+      <g id="hover" style="display:none">
+        <line id="hv-line" y1="${padT - 8}" y2="${H - padB}" class="hover-line"/>
+        <circle id="hv-dot" r="5" fill="#e8c37e" stroke="#14221b" stroke-width="2"/>
+      </g>
+      <text x="${padL}" y="${H - 6}" class="axis">Start</text>
+      <text x="${W - padR}" y="${H - 6}" class="axis" text-anchor="end">${esc(plural(pts.length - 1, 'session'))}</text>
+      <rect x="0" y="0" width="${W}" height="${H}" fill="transparent" id="hit"/>
+    </svg>`;
+  const svg = $('svg', host);
+  const hover = $('#hover', svg);
+  const card = $('#chart-card');
+  const show = clientX => {
+    const r = svg.getBoundingClientRect();
+    const px = ((clientX - r.left) * W) / r.width;
+    const i = Math.max(0, Math.min(last, Math.round(((px - padL) * last) / (W - padL - padR))));
+    const p = pts[i];
+    hover.style.display = '';
+    $('#hv-line', svg).setAttribute('x1', x(i)); $('#hv-line', svg).setAttribute('x2', x(i));
+    $('#hv-dot', svg).setAttribute('cx', x(i)); $('#hv-dot', svg).setAttribute('cy', y(p.value));
+    tip.hidden = false;
+    tip.innerHTML = `<div class="tip-label">${esc(p.label)}</div>
+      <div class="tip-val money">${esc(bm(p.value))}${p.net === null ? '' : ` <span class="net ${netClass(p.net)}">${esc(netText(p.net))}</span>`}</div>`;
+    const cr = card.getBoundingClientRect();
+    const left = r.left - cr.left + (x(i) * r.width) / W;
+    const tw = tip.offsetWidth;
+    tip.style.left = Math.max(8, Math.min(cr.width - tw - 8, left - tw / 2)) + 'px';
+  };
+  const hide = () => { hover.style.display = 'none'; tip.hidden = true; };
+  svg.addEventListener('pointerdown', e => show(e.clientX));
+  svg.addEventListener('pointermove', e => show(e.clientX));
+  svg.addEventListener('pointerleave', hide);
+  svg.addEventListener('pointercancel', hide);
+}
+
+/* ---------- Log / edit a session ---------- */
+function openSessionSheet(existing, prefill = {}) {
+  const br = state.bankroll;
+  const s = existing || { date: todayStr(), where: '', buyIn: null, cashOut: null, minutes: null, notes: '', ...prefill };
+  openSheet(el => {
+    el.innerHTML = `${sheetHead(existing ? 'Edit session' : 'Log session')}
+      <form id="session-form" novalidate>
+        <div class="row">
+          <label class="field grow"><span>Date</span><input class="input" type="date" id="s-date" value="${esc(s.date)}" max="${todayStr()}"></label>
+          <label class="field" style="width:42%"><span>Hours <em class="opt">optional</em></span>
+            <input class="input" id="s-hours" inputmode="decimal" placeholder="3:30" value="${esc(durationToInput(s.minutes))}" autocomplete="off">
+            <div class="error" id="s-hours-err"></div></label>
+        </div>
+        <label class="field"><span>Where / game <em class="opt">optional</em></span>
+          <input class="input" id="s-where" maxlength="60" placeholder="Home game" value="${esc(s.where)}" autocomplete="off" autocapitalize="sentences"></label>
+        <div class="row">
+          <div class="grow">${moneyField('s-in', 'Bought in (total)', s.buyIn === null ? '' : centsToInput(s.buyIn), br.currency)}</div>
+          <div class="grow">${moneyField('s-out', 'Cashed out', s.cashOut === null ? '' : centsToInput(s.cashOut), br.currency)}</div>
+        </div>
+        <div class="net-preview" id="s-net"></div>
+        <label class="field"><span>Notes <em class="opt">optional</em></span>
+          <textarea class="input notes" id="s-notes" maxlength="500" placeholder="Big hands, what went well…">${esc(s.notes || '')}</textarea></label>
+        <div class="stack">
+          <button class="btn btn-primary btn-block" type="submit">${existing ? 'Save' : 'Log session'}</button>
+          ${existing ? `<button class="btn btn-danger btn-block" type="button" id="s-delete-session">${ICON.trash} Delete session</button>` : ''}
+        </div>
+      </form>`;
+    wireClose(el);
+    const preview = () => {
+      const a = parseMoney($('#s-in', el).value), b = parseMoney($('#s-out', el).value);
+      const box = $('#s-net', el);
+      if (a === null || b === null) { box.innerHTML = ''; return; }
+      const n = b - a;
+      box.innerHTML = `Result: <span class="net ${netClass(n)}">${esc(netText(n))}</span>`;
+    };
+    $('#s-in', el).oninput = preview; $('#s-out', el).oninput = preview; preview();
+    $('#session-form', el).onsubmit = e => {
+      e.preventDefault();
+      el.querySelectorAll('.error').forEach(x => (x.textContent = ''));
+      const buyIn = parseMoney($('#s-in', el).value);
+      const cashOut = parseMoney($('#s-out', el).value);
+      const hoursRaw = $('#s-hours', el).value.trim();
+      const minutes = hoursRaw === '' ? null : parseDuration(hoursRaw);
+      let date = $('#s-date', el).value;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) date = todayStr();
+      let bad = false;
+      if (buyIn === null) { $('#s-in-err', el).textContent = 'Enter what you bought in for.'; bad = true; }
+      if (cashOut === null) { $('#s-out-err', el).textContent = 'Enter what you left with (0 if busted).'; bad = true; }
+      if (hoursRaw !== '' && (minutes === null || minutes === 0)) { $('#s-hours-err', el).textContent = 'Like 3:30 or 3.5'; bad = true; }
+      if (bad) return;
+      const data = { date, buyIn, cashOut, minutes, where: normName($('#s-where', el).value), notes: $('#s-notes', el).value.trim() };
+      closeSheet();
+      if (existing) {
+        commit(() => { Object.assign(br.sessions.find(x => x.id === existing.id), data); });
+        toast('Session saved');
+      } else {
+        commit(() => { br.sessions.push({ id: uid(), createdAt: Date.now(), gameId: prefill.gameId || null, ...data }); },
+          `Logged ${netText(cashOut - buyIn)}`);
+      }
+    };
+    const del = $('#s-delete-session', el);
+    if (del) del.onclick = () => confirmSheet({
+      title: 'Delete session?',
+      body: `${esc(fmtDay(existing.date, true))}${existing.where ? ' · ' + esc(existing.where) : ''} (${esc(netText(sessionNet(existing)))}) will be removed from your stats.`,
+      confirm: 'Delete session',
+      onConfirm: () => commit(() => { br.sessions = br.sessions.filter(x => x.id !== existing.id); }, 'Session deleted'),
+    });
+  });
+}
+
+/* ---------- From a finished game ---------- */
+function openPickMeSheet(game) {
+  const already = state.bankroll.sessions.find(s => s.gameId === game.id);
+  openSheet(el => {
+    el.innerHTML = `${sheetHead('Which one is you?')}
+      <p class="lead">Your result goes into your private bankroll on this phone.${already ? ' You already logged this game. Picking again replaces it.' : ''}</p>
+      <div class="stack">${game.players.map(p => {
+        const n = (p.cashOut ?? 0) - sumBuyIns(p);
+        return `<button class="menu-item" data-me="${esc(p.id)}"><span class="avatar">${esc(initial(p.name))}</span>
+          <span class="grow">${esc(p.name)}<small class="money">in ${esc(money(game, sumBuyIns(p)))} · out ${esc(money(game, p.cashOut ?? 0))}</small></span>
+          <span class="net ${netClass(n)}">${esc(money(game, n, { sign: true }))}</span></button>`;
+      }).join('')}</div>`;
+    wireClose(el);
+    el.querySelectorAll('[data-me]').forEach(b => (b.onclick = () => {
+      const p = game.players.find(x => x.id === b.dataset.me);
+      const data = { date: dayStr(game.createdAt), buyIn: sumBuyIns(p), cashOut: p.cashOut ?? 0, where: game.name, gameId: game.id };
+      closeSheet(true);
+      commit(() => {
+        const br = state.bankroll;
+        br.sessions = br.sessions.filter(s => s.gameId !== game.id);
+        br.sessions.push({ id: uid(), createdAt: Date.now(), minutes: null, notes: '', ...data });
+      }, `Added ${data.cashOut - data.buyIn === 0 ? 'an even result' : netText(data.cashOut - data.buyIn)} to your bankroll`);
+      go('#/me');
+    }));
+  });
+}
+
+/* ---------- Bankroll settings ---------- */
+function openBankrollSettings() {
+  const br = state.bankroll;
+  openSheet(el => {
+    let cur = br.currency;
+    el.innerHTML = `${sheetHead('Bankroll settings')}
+      <form id="br-form" novalidate>
+        <div id="br-start-wrap">${moneyField('br-start', 'Starting bankroll', br.start ? centsToInput(br.start) : '', cur, 'What you had before your first logged session.')}</div>
+        <div class="field"><span>Currency</span>
+          <div class="seg" role="group" aria-label="Currency">
+            ${Object.entries(CURRENCIES).map(([k, c]) => `<button type="button" data-cur="${k}" aria-pressed="${k === cur}" aria-label="${esc(c.label)}">${c.symbol || 'Chips'}</button>`).join('')}
+          </div></div>
+        <button class="btn btn-primary btn-block" type="submit">Save</button>
+      </form>
+      <div class="divider"></div>
+      <div class="stack">
+        ${br.pin
+          ? `<button class="menu-item" id="pin-change">${ICON.lock}<span>Change PIN</span></button>
+             <button class="menu-item" id="pin-remove">${ICON.lock}<span>Remove PIN</span></button>`
+          : `<button class="menu-item" id="pin-set">${ICON.lock}<span>Lock with a PIN<small>Keeps your stats private if you hand your phone around</small></span></button>`}
+        <button class="menu-item danger" id="br-erase">${ICON.trash}<span>Erase my bankroll</span></button>
+      </div>
+      <p class="footnote">The PIN keeps people out of this screen on this phone. Your data never leaves the phone. The PIN isn’t encryption, and it can’t be recovered if you forget it.</p>`;
+    wireClose(el);
+    el.querySelectorAll('[data-cur]').forEach(b => (b.onclick = () => {
+      cur = b.dataset.cur;
+      const v = $('#br-start', el).value;
+      $('#br-start-wrap', el).innerHTML = moneyField('br-start', 'Starting bankroll', v, cur, 'What you had before your first logged session.');
+      el.querySelectorAll('[data-cur]').forEach(x => x.setAttribute('aria-pressed', String(x.dataset.cur === cur)));
+    }));
+    $('#br-form', el).onsubmit = e => {
+      e.preventDefault();
+      const raw = $('#br-start', el).value.trim();
+      const start = raw === '' ? 0 : parseMoney(raw);
+      if (start === null) { $('#br-start-err', el).textContent = 'Enter an amount, like 500 or 250.50.'; return; }
+      closeSheet();
+      commit(() => { br.start = start; br.currency = cur; });
+      toast('Bankroll settings saved');
+    };
+    const set = $('#pin-set', el) || $('#pin-change', el);
+    if (set) set.onclick = () => openSetPinSheet();
+    const rm = $('#pin-remove', el);
+    if (rm) rm.onclick = () => confirmSheet({
+      title: 'Remove PIN?', body: 'Anyone using this phone will be able to open your bankroll.', confirm: 'Remove PIN', danger: true,
+      onConfirm: () => { commit(() => { br.pin = null; }); toast('PIN removed'); },
+    });
+    $('#br-erase', el).onclick = () => confirmSheet({
+      title: 'Erase your bankroll?',
+      body: `${plural(br.sessions.length, 'session')}, your starting amount and your PIN will be deleted from this phone. Your games are kept.`,
+      confirm: 'Erase bankroll',
+      onConfirm: () => commit(() => { state.bankroll = emptyBankroll(br.currency); }, 'Bankroll erased'),
+    });
+  });
+}
+
+function openSetPinSheet() {
+  openSheet(el => {
+    el.innerHTML = `${sheetHead('Set a PIN')}<div data-pad></div>`;
+    wireClose(el);
+    let first = null;
+    mountPinPad($('[data-pad]', el), {
+      title: 'Choose a 4-digit PIN',
+      subtitle: 'You’ll need it to open your bankroll.',
+      onComplete: async pin => {
+        if (first === null) { first = pin; return { next: 'Enter it again to confirm.' }; }
+        if (pin !== first) { first = null; return 'PINs didn’t match. Choose a PIN again.'; }
+        try {
+          const salt = newSalt();
+          const hash = await hashPin(pin, salt);
+          closeSheet(true);
+          unlocked = true;
+          commit(() => { state.bankroll.pin = { salt, hash }; });
+          toast('PIN set. Your bankroll locks when you leave the app.');
+          return true;
+        } catch (e) {
+          return 'This browser can’t set a PIN here.';
+        }
+      },
+    });
   });
 }
 
